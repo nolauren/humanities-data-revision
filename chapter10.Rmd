@@ -1,0 +1,186 @@
+---
+title: "Text Analysis"
+output: html_document
+---
+
+```{r, message=FALSE}
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(stringi)
+library(tidyr)
+library(magrittr)
+
+theme_set(theme_minimal())
+```
+
+This RMarkdown script is a revised and condensed version of tenth chapter from
+the book "Humanities Data in R". There have been many changes over the past 5
+year in regards to NLP technology and this revision uses our new R package (cleanNLP)
+in place of the older and unsupported coreNLP. The book itself is still useful
+as it contains additional information about each of the NLP tasks. We suggest pairing
+the exposition in the book but to run the R code from this file instead.
+
+# Introduction
+------------
+
+In the previous chapter we explored methods for converting raw textual
+data into a sequence of tokens and associating these tokens with various
+metadata and relationships. The parsed information has already been
+shown to be effective in the retrieval of factual information (ex.
+character names) and a high-level categorization of narrative arcs and
+textual style. We continue with this approach by presenting several
+techniques for utilizing the output of NLP annotations to explore and
+visualize a corpus of textual documents.
+
+# Term Frequency - Inverse Document Frequency
+
+In this section, we present the numerical statistics known as the (often
+shortened to tf-idf) associated with any document and lemma pair from a
+given text corpus. In order to demonstrate the use of this statistic, we
+will investigate a collection of $179$ Wikipedia articles from pages
+tagged as coming from philosophers from the 16th to the 20th centuries.
+
+```{r}
+library(cleanNLP)
+
+cnlp_init_spacy()
+
+text_names <- dir("data/wiki/", full.names=TRUE)
+text_names_short <- stri_sub(text_names, 12, -5)
+texts <- sapply(text_names, function(v) paste(readLines(v), collapse="\n"), USE.NAMES = FALSE)
+anno <- cnlp_annotate(texts)
+token <- anno$token
+```
+
+Looking at the $50$ most frequently occurring noun lemmas from the
+encyclopedia entries of our philosophers reveals an unsurprising list.
+Terms such as 'philosophy', 'government', 'principle' and 'theory'
+appear a high number of times.
+
+```{r}
+token %>%
+  filter(upos == "NOUN") %>%
+  count(lemma, sort=TRUE)
+```
+
+Constructing a term frequency matrix is quite easy because there is a special
+function in cleanNLP to create it:
+
+```{r}
+tf <- token %>%
+  filter(upos == "NOUN") %>%
+  cnlp_utils_tf()
+rownames(tf) <- text_names_short
+dim(tf)
+```
+
+The output reveals, for example, that Machiavelli's page has $29$ lemmas
+equal to 'work' whereas Francis Bacon does not have a single reference
+to the lemma 'theory'.
+
+```{r}
+tf[1:10,seq(1,45,by=5)]
+```
+
+Similarly, we can create a TF-IDF matrix with the function `cnlp_utils_tfidf`:
+
+```{r}
+tfidf <- token %>%
+  filter(upos == "NOUN") %>%
+  cnlp_utils_tfidf()
+rownames(tfidf) <- text_names_short
+dim(tfidf)
+```
+
+Now that we have our importance score, let's look at the first ten
+philosophers.
+
+```{r}
+tfidf[1:10,seq(1,45,by=5)]
+```
+
+For example, Machiavelli's page has an importance score of $5.1803149$ for
+'power' but only a score $0.9676316$ for 'sense'
+
+With these importance scores now calculated, we can look at the lemmas
+with the highest score for each article. A sample from a few prominent
+pages shows that the tf-idf method has successfully picked up reasonable
+lemmas to represent some of the major article themes.
+
+```{r}
+top_terms <- apply(tfidf, 1, function(v) paste(colnames(tfidf)[order(v, decreasing=TRUE)[1:5]], collapse="; "))
+tibble(philosopher=names(top_terms), top_terms = as.character(top_terms))
+```
+
+Take a look at these terms and see if they match what you would expect for each philosopher.
+
+# Topic Models
+
+A statistical representation of topics within a textual corpus of
+documents are referred to as a Topic Model. Typically, each is represented by a set
+of related lemmas; these are often accompanied by weights to indicate
+the relative prominence of each lemma within a topic. Each document, in
+turn, is proportionally assigned to each topic. For example, the article
+about Noam Chomsky may be 90% in the linguistics category and 10% in a
+psychology topic, whereas Hilary Putnam might be split evenly between
+the linguistics and mathematics topics.
+
+```{r}
+bow <- token %>%
+  group_by(doc_id) %>%
+  filter(upos == "NOUN") %>%
+  summarize(bag_of_words = paste(lemma, collapse=" "))
+```
+
+```{r}
+library(topicmodels)
+
+tf <- token %>%
+  filter(upos == "NOUN") %>%
+  cnlp_utils_tf(min_df = 0.05, max_df = 0.95)
+rownames(tf) <- text_names_short
+
+set.seed(1)
+tm <- LDA(as.matrix(tf), k = 16, control = list(verbose = 1))
+```
+
+
+```{r}
+terms <- posterior(tm)$terms
+topics <- posterior(tm)$topics
+topic_df <- data_frame(topic = as.integer(col(topics)),
+                       id = text_names_short[as.integer(row(topics))],
+                       val = as.numeric(topics))
+```
+
+With these results in hand, a natural first step is to look at the top
+few words within each of the $9$ topics. The top $5$ words in each topic
+can be displayed by ordering the elements of the matrix over each row.
+
+```{r}
+top_terms <- apply(terms, 1,
+               function(v) paste(colnames(tfidf)[order(v, decreasing = TRUE)[1:5]], collapse = ", "))
+top_terms <- as.character(top_terms)
+top_terms
+```
+
+Another method for visualizing the output of a topic model is by
+conducting dimensionality reduction on the topic matrix and showing how the topics 
+relate to one another. Taking the first two principal components of the Matrix:
+
+```{r}
+pca <- cnlp_utils_pca(t(topics))
+pca$name <- top_terms
+```
+
+And we can now try to visualize where these sit relative to one another:
+
+```{r}
+library(ggrepel)
+
+pca %>%
+  ggplot(aes(PC1, PC2)) +
+    geom_point() +
+    geom_text_repel(aes(label=name), size=2)
+```

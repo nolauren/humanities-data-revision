@@ -1,0 +1,529 @@
+---
+title: "Natural Language Processing"
+output: html_document
+---
+
+```{r, message=FALSE}
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(stringi)
+library(tidyr)
+library(magrittr)
+
+theme_set(theme_minimal())
+```
+
+This RMarkdown script is a revised and condensed version of ninth chapter from
+the book "Humanities Data in R". There have been many changes over the past 5
+year in regards to NLP technology and this revision uses our new R package (cleanNLP)
+in place of the older and unsupported coreNLP. The book itself is still useful
+as it contains additional information about each of the NLP tasks. We suggest pairing
+the exposition in the book but to run the R code from this file instead.
+
+# Tokenization & Sentence Splitting
+
+Consider (an English translation of) the opening lines to Albert Camus's
+*l'Étranger*. Let's represent this as a length one character vector in R.
+
+```{r}
+camus <- "Mother died today. Or, maybe, yesterday; I can't be sure."
+```
+
+A practical, and seemingly simple, first step in processing this string
+is to split it into a longer character vector where each element
+contains a single word. But what exactly is meant by a word? Are
+punctuation marks separate words? What about contractions, hyphens, or
+compound nouns such as 'New York City'? If we split this string apart
+using just the presence of spaces the result seems approximately
+reasonable, but less than perfect.
+
+```{r}
+stri_split(camus, fixed=" ")
+```
+
+The process of splitting text into meaningful elements is called tokenization.
+For an English text the difficult task is catching the myriad of rules and
+exceptions. Rather than re-creating and re-implementing these conditions, it
+is better to use a well-tested library to tokenize our string.
+
+Throughout this chapter will be make use of an R package we have
+developed called **cleanNLP**. The package provides various backends that
+use different libraries to perform various NLP tasks, but then transforms
+their output into a common format. To start, we will use the backend
+because it is reasonably powerful but also easy to install (in fact, you
+should not need to do anything other than install cleanNLP from CRAN). To
+start, we load the package and call to the function to indicate that we
+want to use this particular backend.
+
+```{r}
+library(cleanNLP)
+cnlp_init_udpipe()
+```
+
+The first time you run this function, R will automatically download the
+language model from the internet. This may take a minute or two
+depending on your internet connection; the file will be cached for
+future use.
+
+In order to process a string of text using we pass a text through the
+function . We will explore the various parts of the output throughout
+this chapter.
+
+```{r}
+annotation <- cnlp_annotate(camus)
+names(annotation)
+```
+
+The two elements of the annotation give information about the detected
+tokens and the input documents, respectively. Most of the useful
+information is in the tokens table, such as an improved version of
+tokenization as seen here:
+
+```{r}
+token <- annotation$token
+token$token
+```
+
+Notice that the punctuation symbols have been assigned to their own
+elements and the contraction 'can't' has been split into two words.
+(Note: In the next step, 'ca' and 'n't' will be addressed.) However, the
+input text has not been modified with the exception of removing spaces.
+In addition to the process of tokenizing the input, the annotation also
+calculated how to split the input into sentences. To see the assignment
+of sentences, pull the sentence element out of the tokenization.
+
+```{r}
+token$sid
+```
+
+The algorithm has assigned the first four tokens to the first sentence,
+and the remainder to a second sentence.
+
+Can we learn anything useful directly from the output of this process of
+tokenization? In our short $16$ lemma example probably not, but consider
+applying the algorithm to a longer sample of text. We will now try to
+use a longer text, here the first published Sherlock Holmes short story,
+"A Scandal in Bohemia".
+
+```{r}
+text <- readLines("data/holmes/01_a_scandal_in_bohemia.txt")
+anno <- cnlp_annotate(paste(text, collapse="\n"))
+token <- anno$token
+dim(token)
+```
+
+The output object is of exactly the same structure as our short example.
+In this case 10587 tokens have been processed. We can use the
+tokenization and sentence splitting to determine the length of every
+sentence in the text.
+
+```{r}
+token %>%
+  group_by(doc_id, sid) %>%
+  summarize(sent_len = length(tid)) %>%
+  ggplot(aes(sent_len)) +
+    geom_histogram(bins=30, color="black", fill="white")
+```
+
+The distribution shows a sharp peak of sentences less then 10 tokens long;
+this is fairly short, particularly when considering that punctuation is included in this
+count, and likely a product of the heavy use of dialogue in the text. A
+very small set of sentences are 60 or more tokens long. A close analysis of
+the original text reveals most of these to be part of a long deductive
+speech given by Sherlock Holmes towards the end of the story.
+
+# Lemmatization & Part of Speech Tagging
+
+While tokenizing simply splits the raw character input into groups,
+lemmatization goes further by converting each token into a representative
+lemma. For example, 'go' is the English lemma for words such as 'gone',
+'going', and 'went'. Nouns have their own process of lemmatization, such as
+converting all words into their singular form; for example 'dogs' becomes
+'dog' and 'mice' becomes 'mouse'.
+
+Notice that lemmatization changes depending on the part of speech.
+Therefore, much like tokenization and sentence splitting, the task of
+tagging tokens with parts of speech and lemmatization is often
+accomplished in tandem. To demonstrate how both work in the package, we
+again turn to our annotation of 'A Scandal in Bohemia'. Pulling out the
+second sentence (and obscuring some of the columns so as not to overwhelm
+ourselves with the rest of the output) reveals the following data frame.
+
+```{r}
+select(token, doc_id, sid, tid, token, lemma, xpos)
+```
+
+The lemmatization process should seem straightforward. The verb 'heard'
+is now represented by the infinitive 'hear', and the pronouns 'him' and
+'her' are changed to their nominative forms 'he' and 'she'. Otherwise,
+the words remain unchanged in their lemma form. The part of speech
+codes, on the other hand, may at first seem confusing; for example there
+are three different codes for the verbs 'have', 'heard', and 'mention'.
+
+The part of speech codes come from the Penn Treebank Project, and contain
+many more categories compared to those typically taught in primary school
+grammar courses. For example **VBN** is the past participle form of a verb,
+whereas **VB** is the base form of a verb. A table from our annotation shows
+the entire set of possibilities.
+
+```{r}
+token %>%
+  count(xpos, sort = TRUE)
+```
+
+We see that **JJS**, superlative adjectives, are relatively uncommon,
+and **NN** and **IN** tags, prepositions or subordinating conjunction, occur
+quite frequently. For a complete description of these tags see the technical
+report and justification from the Penn Treebank Project.
+
+The extended set of parts of speech are quite useful, but many times a
+smaller set of more familiar options can better serve a particular
+purpose. Unviversal tagsets have been created as language-agnostic part
+of speech classifiers. A mapping from Penn Treebank
+codes into this smaller tag-set is provided as a column in the output. A table
+using universal tagsets reveals a smaller and more familiar list of parts of
+speech.
+
+```{r}
+token %>%
+  count(upos, sort = TRUE)
+```
+
+We can see how these map to the more grainular part of speech codes as follows:
+
+```{r}
+token %>%
+  count(upos, xpos) %>%
+  filter(upos %in% c("NOUN", "PROPN", "VERB"))
+```
+
+Nouns correspond to plural nouns (**NNS**) and singular (**NN**) nouns.
+There are also two plural proper noun codes (**NNP** and **NNPS**). The
+verb subtypes refer to various broad categories of verb conjugations.
+
+With these universal part of speech codes, we can run some basic
+analysis on the sentences in our text. First, we count the number of
+nouns, pronouns, adjectives and verbs in each sentence using the
+function.
+
+```{r}
+pos_df <- token %>%
+  group_by(doc_id, sid, upos) %>%
+  summarize(n = n()) %>%
+  pivot_wider(names_from="upos", values_from=n, values_fill = list(n=0))
+pos_df
+```
+
+An interesting stylistic question would be to see the within-sentence
+distribution of nouns (including pronouns), verbs, and adjectives. Due
+to the discrete nature of count data, a simple scatter plot will not
+work well. Instead we take advantage of over-plotting and color opacity
+to produce an interpretable visual description of this distribution.
+
+```{r}
+pos_df %>%
+  ggplot(aes(NOUN + PRON, VERB)) +
+    geom_point(size=2, alpha=0.1, color="blue")
+```
+
+```{r}
+pos_df %>%
+  ggplot(aes(NOUN + PRON, ADJ)) +
+    geom_point(size=2, alpha=0.1, color="blue")
+```
+
+We see that verbs and nouns are well correlated
+and roughly appear in equal numbers for short sentences, whereas longer
+sentences tend to increase in terms of nouns faster than the number of
+verbs. Adjectives do not follow such a smooth relationship with nouns;
+regardless of the number of nouns they rarely occur more than 2 times in
+a sentence, despite occurring once in almost half of sentences with only
+one noun. One cause for both of these effects comes from the fact that
+multi-word nouns get double counted. For instance the name 'Dr. John H.
+Watson', accounts for $4$ noun counts, but would not generally require
+more adjectives or verbs than when 'Watson' is used alone.
+
+Part of speech tagging also has the benefit of isolating function words,
+those with primarily grammatical usage such as prepositions and conjunctions, from
+those words with lexical meaning. Along with the use of lemmatization to
+collapse various word forms together, we can now gain potentially
+important contextual information from a text by identifying the most
+frequently used lemmas from a particular part of speech. The top $25$
+noun lemmas from our sample text for example identify some of the key
+characters and objects of interest in the story.
+
+```{r}
+token %>%
+  filter(upos %in% c("NOUN", "PROPN")) %>%
+  count(lemma) %>%
+  arrange(desc(n))
+```
+
+The third most common word, 'photograph', comes from the main objective
+presented in the story: the recovery of a scandalous photograph.
+References to the main characters are also present: 'Sherlock Holmes' of
+course, 'Majesty' being the royal client wishing to recover the
+photograph, and 'Irene Adler' the subject of the photograph in question.
+
+Knowing beforehand the text in question, we were able to extract the
+character names from a table of the most common nouns. Identifying facts
+we already know however is not particularly useful. We can get a bit closer
+by looking only at proper nouns:
+
+```{r}
+token %>%
+  filter(upos %in% c("PROPN")) %>%
+  count(lemma) %>%
+  arrange(desc(n))
+```
+
+The reduced list includes an increased set of characters, while removing
+many of the non-name nouns from the list. The results are still lacking
+as the titles and first and last names are not linked together. Some
+non-names are also present, such as the proper place names 'Europe' and
+'London'. In order to resolve these issues we need to discern
+relationships between pairs of words, rather than working with lemmas
+individually.
+
+# Dependencies
+
+To this point, we have primarily worked with individual words, tokens,
+and lemmas. We now approach the subject of sentence parsing, where the words
+within a sentence are assigned a complete linguistic structure linking
+together all of the individual parts. The result of this, known as a
+parse tree, has a nice graphical structure. Looking at the additional
+columns in the token table, here are the dependencies that were detected
+by .
+
+```{r}
+token %>%
+  filter(sid == 5)
+```
+
+As with the part of speech codes, the dependency type codes can be
+difficult to interpret without a code book. The one that we
+will make explicit use of here is **nsubj**, which identifies 'a noun phrase,
+which is syntactic subject of a clause'. The latter typically relates a noun
+and its verb, but may link a noun to another noun (as above) or adjective in
+the presence of a copular verb.
+
+The output from cleanNLP gives a compact representation of the dependency
+structure. It will be useful to include more information in the table to
+tie together each token with its source dependency. This is achieved
+through joining the tokens table with itself.
+
+```{r}
+dep <- token %>%
+  left_join(
+    select(token, doc_id, sid, tid_source=tid, token, lemma, upos, xpos),
+    suffix=c("", "_dep"),
+    by=c("doc_id", "sid", "tid_source")
+  )
+dep
+```
+
+Now, for example, we can see that the token 'I' is the subject of the
+verb 'here'. For an example of how dependency information can be used to
+understand a textual source, consider identifying the most frequently used
+verbs that take the action from the pronoun 'I' used as the subject of a
+sentence.
+
+```{r}
+dep %>%
+  filter(token == "I", relation == "nsubj") %>%
+  count(lemma_dep) %>%
+  arrange(desc(n))
+```
+
+The analysis here is slightly difficult because 'I' may represent the
+narrator or could be present in a quotation.
+
+# Named Entity Recognition
+
+The task of automatically detecting and classifying elements of a text
+into broad semantic categories is known as named entity recognition (NER).
+To get NERs from cleanNLP, we need to use a different backend. Here, we
+will use the **spacy** backend. It is faster and more accurate, but does
+take a bit more work to install (see https://github.com/statsmaths/cleanNLP
+for more details). Here we initalize the backend and run it over our text:
+
+```{r}
+cnlp_init_spacy()
+text <- readLines("data/holmes/01_a_scandal_in_bohemia.txt")
+anno <- cnlp_annotate(paste(text, collapse="\n"))
+token <- anno$token
+ner <- anno$entity
+
+ner
+```
+
+Taking our sample text, we see the following $11$ categories picked up
+by the algorithm ('O' is used for a non-hit).
+
+```{r}
+ner %>%
+  count(entity_type, sort = TRUE)
+```
+
+Which kinds of tags were identified as locations (either LOC or GPE)?
+Thankfully, many of the false positives in our character set are picked up
+by the location tag. See for instance New Jersey and Baker Street.
+
+```{r}
+ner %>%
+  filter(entity_type %in% c("LOC", "GPE")) %>%
+  count(entity, sort = TRUE)
+```
+
+These can be helpful in determining the location or topic of a given
+story.
+
+The named entity tag that will help the most with our goal of
+identifying the main characters in our short story, unsurprisingly, is
+the one indicating persons.
+
+```{r}
+ner %>%
+  filter(entity_type %in% c("PERSON")) %>%
+  count(entity, sort = TRUE)
+```
+
+The resulting list of characters is a significant improvement over our
+last attempt, with many false positives removed and longer names
+reconstructed.
+
+We could also clean up the duplicated names, such as 'Holmes'. This
+often occurs when a character is mentioned at some point with only part
+of their name. We do this by cycling through the list of names and
+replacing the text of any one that is a strict subset of another.
+
+```{r}
+characters <- ner %>%
+  filter(entity_type %in% c("PERSON")) %>%
+  count(entity, sort = TRUE) %>%
+  select(-n)
+
+characters$full_name <- ""
+for (j in seq_len(nrow(characters))) {
+   these <- which(stri_detect(characters$entity, fixed=characters$entity[j]))
+   these <- these[which.max(stri_length(characters$entity[these]))]
+   characters$full_name[j] <- characters$entity[these]
+}
+
+characters$full_name <- stri_replace_all(characters$full_name, "", fixed="'")
+characters %>%
+  count(full_name, sort=TRUE)
+```
+
+# Case Study: Sherlock Holmes Main Characters
+
+We have now built an algorithm for extracting character names using the
+cleanNLP library and verified that the results were reasonable on a
+single short story. Here we process the entire set of 56 short stories
+using **cleanNLP**.
+
+```{r}
+cnlp_init_spacy()
+
+text_names <- dir("data/holmes/", full.names=TRUE)
+texts <- sapply(text_names, function(v) paste(readLines(v), collapse="\n"), USE.NAMES = FALSE)
+anno <- cnlp_annotate(texts)
+token <- anno$token
+ner <- anno$entity
+```
+
+Now, we can identify character names using NER.
+
+```{r}
+longest_word <- function(v) { v[which.max(stri_length(v))] }
+
+ner_characters <- ner %>%
+  filter(entity_type == "PERSON") %>%
+  left_join(select(token, doc_id, sid, tid, token), by=c("doc_id"="doc_id", "sid"="sid", "tid_end"="tid")) %>%
+  group_by(doc_id, token) %>%
+  mutate(char_name = longest_word(entity)) %>%
+  ungroup()
+
+ner_characters %>%
+  count(doc_id, char_name, sort=TRUE)
+```
+
+And finally, can detect the most frequently mentioned character in each text that is neither
+Sherlock Holmes nor John Watson.
+
+```{r}
+top_characters <- ner_characters %>%
+  filter(!(token %in% c("Holmes", "Watson"))) %>%
+  group_by(doc_id, char_name) %>%
+  summarize(n = n()) %>%
+  top_n(n, n=1) %>%
+  select(-n)
+
+top_characters$char_name
+```
+
+The results are encouraging and reveal an interesting list of characters
+(none of which are repeated). Pulling out any particular story tends to
+reveal a good match between our algorithm and a synopsis of the story.
+Take for example number 23 'The Final Problem' and its introduction of the
+criminal mastermind Professor Moriarty.
+
+Other than just looking at this list of characters, there is substantial
+analysis that can also be done with our parsed data. We can compute where
+in each story a character is mentioned. The entire set of these can be
+visualized for a representation of when and how often each character is referenced.
+
+```{r, message=FALSE, fig.height=6}
+ner_characters %>%
+  semi_join(top_characters) %>%
+  left_join(summarize(group_by(token, doc_id), total_sid = max(sid))) %>%
+  mutate(percent = sid / total_sid) %>%
+  ggplot(aes(percent, basename(text_names[doc_id]))) +
+    geom_point() +
+    xlab("Percentage of Story") + ylab("")
+```
+
+Notice, for instance, that Irene Adler has relatively few mentions in the the
+first story compared to other characters in later installments.
+
+# Other Languages
+
+The cleanNLP package has support for parsing text in languages other
+than English. To use these, simply specify the correct model when
+running the function `cnlp_init_udpipe` or `cnlp_init_spacy`. For
+example, here are the first two sentences of Albert Camus's L'Étranger
+in French:
+
+```{r}
+camus_fr <- "Aujourd'hui, maman est morte. Ou peut-être hier, je ne sais pas. J'ai reçu un télégramme de l'asile."
+```
+
+Here is what happens when we use the English model:
+
+```{r}
+cnlp_init_udpipe()
+anno <- cnlp_annotate(camus_fr)$token
+anno$token
+```
+
+Not terrible, but it incorrectly splits the single tokens "Aujourd'hui" and "peut-être"
+into two parts but does not split the two tokens "J'ai". The other parts of the NLP
+pipeline are even more effected. Look, for example at the lemmas and part of speech
+codes, which are almost all incorrect:
+
+```{r}
+anno
+```
+
+If we instead load the French model, these issues are fixed:
+
+```{r, message=FALSE}
+cnlp_init_udpipe("french")
+anno <- cnlp_annotate(camus_fr)$token
+anno
+```
+
+For example, "J'ai" is not split into two tokens which have the lemmas "Je" (I) and
+"avoid" (to have). In general, it is important to use the correct language model when
+working with textual corpora.
